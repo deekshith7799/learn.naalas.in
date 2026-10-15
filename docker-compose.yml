@@ -1,0 +1,112 @@
+# Container logs are capped so they can never fill the disk (MongoDB alone logs a line every minute).
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  # ---- the app itself ----
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      POSTGRES_DB: academy
+      POSTGRES_USER: academy
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U academy -d academy"]
+      interval: 5s
+      retries: 10
+
+  server:
+    build: ./server
+    restart: unless-stopped
+    logging: *default-logging
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://academy:${POSTGRES_PASSWORD}@db:5432/academy
+      JWT_SECRET: ${JWT_SECRET}
+      ADMIN_EMAIL: ${ADMIN_EMAIL}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      LAB_ADMIN_PASSWORD: ${LAB_ADMIN_PASSWORD:?Set LAB_ADMIN_PASSWORD in .env (see .env.example)}
+      SIGNUP_CODE: ${SIGNUP_CODE:-}
+    networks: [default, lab]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:4000/api/health >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+
+  web:
+    build: ./client
+    restart: unless-stopped
+    logging: *default-logging
+    depends_on:
+      - server
+    environment:
+      DOMAIN: ${DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+
+  # ---- practice lab: throw-away engines learners run their queries on ----
+  # They sit on an internal network: no published ports, no internet, no route to the app database.
+  pg-lab:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      POSTGRES_PASSWORD: ${LAB_ADMIN_PASSWORD}
+    command: ["postgres", "-c", "max_connections=100", "-c", "shared_buffers=128MB", "-c", "log_min_messages=warning"]
+    volumes:
+      - pglab_data:/var/lib/postgresql/data
+    mem_limit: 512m
+    networks: [lab]
+
+  mysql-lab:
+    image: mysql:8.4
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      MYSQL_ROOT_PASSWORD: ${LAB_ADMIN_PASSWORD}
+    command: ["--local-infile=0", "--max-connections=200", "--innodb-buffer-pool-size=128M", "--skip-name-resolve"]
+    volumes:
+      - mysqllab_data:/var/lib/mysql
+    mem_limit: 768m
+    networks: [lab]
+
+  mongo-lab:
+    image: mongo:7.0
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: ${LAB_ADMIN_PASSWORD}
+    # --noscripting: no server-side JavaScript ($where, $function) for learners
+    command: ["mongod", "--auth", "--noscripting", "--bind_ip_all", "--wiredTigerCacheSizeGB", "0.25"]
+    volumes:
+      - mongolab_data:/data/db
+    mem_limit: 512m
+    networks: [lab]
+
+networks:
+  lab:
+    internal: true
+
+volumes:
+  pgdata:
+  pglab_data:
+  mysqllab_data:
+  mongolab_data:
+  caddy_data:
+  caddy_config:
