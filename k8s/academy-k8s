@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Admin wrapper for the Kubernetes install (run on the EC2 server, from the project folder).
+#   ./k8s/academy-k8s users          ./k8s/academy-k8s add-user ravi@x.com "Ravi K"
+#   ./k8s/academy-k8s status         ./k8s/academy-k8s backup
+#   ./k8s/academy-k8s update 20261015-1430     (pull and roll out a new image tag)
+set -euo pipefail
+cd "$(dirname "$0")/.."
+if kubectl get ns >/dev/null 2>&1; then K="kubectl"; else K="sudo k3s kubectl"; fi
+N="-n academy"
+
+case "${1:-help}" in
+  status)
+    $K $N get pods -o wide
+    if $K $N exec deploy/server -- wget -qO- http://127.0.0.1:4000/api/health >/dev/null 2>&1; then echo "API: healthy"
+    else echo "API: NOT responding (see: ./k8s/academy-k8s logs)"; exit 1; fi ;;
+  backup)
+    f="backup-$(date +%F-%H%M).sql"
+    $K $N exec sts/db -- sh -c 'pg_dump -U academy academy' > "$f"
+    echo "Saved $f   (a nightly copy is also kept inside the cluster, 7 days: kubectl -n academy get cronjob)" ;;
+  restore)
+    [ -f "${2:-}" ] || { echo "usage: ./k8s/academy-k8s restore <file.sql>"; exit 1; }
+    $K $N exec -i sts/db -- psql -U academy -d academy < "$2"
+    echo "Restored $2" ;;
+  psql) $K $N exec -it sts/db -- psql -U academy -d academy ;;
+  logs) $K $N logs -f deploy/server ;;
+  restart) $K $N rollout restart deploy/server deploy/web ;;
+  update) shift; bash k8s/deploy.sh "$@" ;;
+  *) $K $N exec deploy/server -- node src/cli.js "$@" ;;
+esac

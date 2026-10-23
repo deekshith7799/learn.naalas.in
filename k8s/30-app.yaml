@@ -1,0 +1,113 @@
+# The API (Node/Express) and the web front end (Caddy serving the built React app). Separate pods, separate images.
+apiVersion: v1
+kind: Service
+metadata: { name: server, namespace: academy }
+spec:
+  selector: { app: server }
+  ports: [{ port: 4000, targetPort: 4000 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: server, namespace: academy }
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  strategy: { type: RollingUpdate, rollingUpdate: { maxUnavailable: 0, maxSurge: 1 } }
+  selector: { matchLabels: { app: server } }
+  template:
+    metadata: { labels: { app: server, tier: app } }
+    spec:
+      enableServiceLinks: false
+      securityContext: { runAsNonRoot: true, runAsUser: 1000, runAsGroup: 1000, seccompProfile: { type: RuntimeDefault } }
+      # Wait for the app database before starting the API.
+      initContainers:
+        - name: wait-for-db
+          image: postgres:16-alpine
+          command: ["sh", "-c", "until pg_isready -h db -p 5432 -U academy; do echo waiting for db; sleep 2; done"]
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] } }
+          resources: { requests: { cpu: 10m, memory: 16Mi }, limits: { memory: 64Mi } }
+      containers:
+        - name: server
+          image: ${IMAGE_SERVER}
+          imagePullPolicy: Always
+          ports: [{ containerPort: 4000 }]
+          env:
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: academy-secrets, key: DATABASE_URL } }
+            - name: JWT_SECRET
+              valueFrom: { secretKeyRef: { name: academy-secrets, key: JWT_SECRET } }
+            - name: ADMIN_EMAIL
+              valueFrom: { secretKeyRef: { name: academy-secrets, key: ADMIN_EMAIL } }
+            - name: ADMIN_PASSWORD
+              valueFrom: { secretKeyRef: { name: academy-secrets, key: ADMIN_PASSWORD } }
+            - name: LAB_ADMIN_PASSWORD
+              valueFrom: { secretKeyRef: { name: academy-secrets, key: LAB_ADMIN_PASSWORD } }
+            - name: SIGNUP_CODE
+              valueFrom: { secretKeyRef: { name: academy-secrets, key: SIGNUP_CODE } }
+            - name: OPEN_ACCESS
+              valueFrom: { secretKeyRef: { name: academy-secrets, key: OPEN_ACCESS } }
+          # Readiness follows the database (traffic stops if it is down); liveness does not, so a database outage never restarts the API.
+          readinessProbe:
+            httpGet: { path: /api/health, port: 4000 }
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            tcpSocket: { port: 4000 }
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            failureThreshold: 3
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { memory: 384Mi }
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: [ALL] } }
+          volumeMounts: [{ name: tmp, mountPath: /tmp }]
+      volumes: [{ name: tmp, emptyDir: {} }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: web, namespace: academy }
+spec:
+  selector: { app: web }
+  ports: [{ port: 8080, targetPort: 8080 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: web, namespace: academy }
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  strategy: { type: RollingUpdate, rollingUpdate: { maxUnavailable: 0, maxSurge: 1 } }
+  selector: { matchLabels: { app: web } }
+  template:
+    metadata: { labels: { app: web, tier: app } }
+    spec:
+      enableServiceLinks: false
+      securityContext: { runAsNonRoot: true, runAsUser: 1000, runAsGroup: 1000, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: web
+          image: ${IMAGE_WEB}
+          imagePullPolicy: Always
+          ports: [{ containerPort: 8080 }]
+          # ":8080" = plain HTTP inside the cluster. HTTPS is handled by the Traefik ingress (60-ingress.yaml).
+          env: [{ name: DOMAIN, value: ":8080" }]
+          readinessProbe:
+            httpGet: { path: /, port: 8080 }
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket: { port: 8080 }
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 20m, memory: 32Mi }
+            limits: { memory: 128Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL], add: [NET_BIND_SERVICE] }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: config, mountPath: /config }
+      volumes:
+        - { name: data, emptyDir: {} }
+        - { name: config, emptyDir: {} }

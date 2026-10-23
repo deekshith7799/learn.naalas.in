@@ -1,0 +1,21 @@
+.env
+node_modules/
+dist/
+backup-*.sql
+deploy/.paused
+
+# Terraform generated files and state
+**/.terraform/
+*.tfstate
+*.tfstate.*
+
+**/.terraform/
+*.tfstate
+*.tfstate.*
+.env
+node_modules/
+**/.terraform/
+*.tfstate
+*.tfstate.*
+.env
+node_modules/

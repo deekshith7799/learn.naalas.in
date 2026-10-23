@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Admin wrapper for DBA Academy. Run from the project folder.  Examples:
+#   ./academy users            ./academy add-user ravi@x.com "Ravi K"
+#   ./academy backup           ./academy restore backup-2026-10-10.sql
+set -euo pipefail
+cd "$(dirname "$0")"
+
+case "${1:-help}" in
+  backup)
+    f="backup-$(date +%F-%H%M).sql"
+    docker compose exec -T db pg_dump -U academy academy > "$f"
+    echo "Saved $f" ;;
+  restore)
+    [ -f "${2:-}" ] || { echo "usage: ./academy restore <file.sql>"; exit 1; }
+    docker compose exec -T db psql -U academy -d academy < "$2"
+    echo "Restored $2" ;;
+  status)
+    docker compose ps
+    if docker compose exec -T server wget -qO- http://127.0.0.1:4000/api/health >/dev/null 2>&1; then
+      echo "API: healthy"
+    else
+      echo "API: NOT responding (see: ./academy logs)"; exit 1
+    fi ;;
+  psql) docker compose exec db psql -U academy -d academy ;;
+  logs) docker compose logs -f server ;;
+  *)    docker compose exec -T server node src/cli.js "$@" ;;
+esac

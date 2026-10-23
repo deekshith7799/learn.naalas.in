@@ -1,0 +1,44 @@
+# Nightly dump of the app database (users + progress) at 02:00 server time, keeps 7 days.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: backups, namespace: academy }
+spec:
+  accessModes: [ReadWriteOnce]
+  resources: { requests: { storage: 2Gi } }
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata: { name: db-backup, namespace: academy }
+spec:
+  schedule: "0 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata: { labels: { app: db-backup } }
+        spec:
+          restartPolicy: OnFailure
+          enableServiceLinks: false
+          containers:
+            - name: dump
+              image: postgres:16-alpine
+              command: ["sh", "-c"]
+              args:
+                - |
+                  set -e
+                  f=/backup/academy-$(date +%F).sql.gz
+                  pg_dump -h db -U academy academy | gzip > "$f.tmp"
+                  mv "$f.tmp" "$f"
+                  find /backup -name 'academy-*.sql.gz' -mtime +7 -delete
+                  ls -lh /backup
+              env:
+                - name: PGPASSWORD
+                  valueFrom: { secretKeyRef: { name: academy-secrets, key: POSTGRES_PASSWORD } }
+              resources:
+                requests: { cpu: 10m, memory: 32Mi }
+                limits: { memory: 128Mi }
+              volumeMounts: [{ name: backup, mountPath: /backup }]
+          volumes: [{ name: backup, persistentVolumeClaim: { claimName: backups } }]

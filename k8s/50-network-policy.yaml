@@ -1,0 +1,48 @@
+# Default: nothing can talk to anything. Then open only what is needed.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: default-deny-ingress, namespace: academy }
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+---
+# Traefik (kube-system) -> web and API
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: allow-ingress-controller, namespace: academy }
+spec:
+  podSelector:
+    matchExpressions: [{ key: app, operator: In, values: [web, server] }]
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }
+---
+# API -> app database and the three lab databases (and nobody else)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: allow-api-to-databases, namespace: academy }
+spec:
+  podSelector:
+    matchExpressions: [{ key: app, operator: In, values: [db, pg-lab, mysql-lab, mongo-lab] }]
+  policyTypes: [Ingress]
+  ingress:
+    - from: [{ podSelector: { matchLabels: { app: server } } }]
+---
+# Backup job -> app database
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: allow-backup-to-db, namespace: academy }
+spec:
+  podSelector: { matchLabels: { app: db } }
+  policyTypes: [Ingress]
+  ingress:
+    - from: [{ podSelector: { matchLabels: { app: db-backup } } }]
+---
+# Lab databases get no outbound traffic at all (no internet, no route to the app database).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: lab-no-egress, namespace: academy }
+spec:
+  podSelector: { matchLabels: { tier: lab } }
+  policyTypes: [Egress]
